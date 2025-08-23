@@ -55,11 +55,19 @@ public struct ContentView: View {
             Text(uploadStatus)
                 .padding()
 
-            // Display download URL if available
+            // Display download URL and download button if available
             if !downloadURL.isEmpty {
                 Text("Download URL: \(downloadURL)")
                     .padding()
                     .foregroundColor(.blue)
+
+                if let url = URL(string: downloadURL) {
+                    Link("Download Video", destination: url)
+                        .padding()
+                        .foregroundColor(.white)
+                        .background(Color.blue)
+                        .cornerRadius(8)
+                }
             }
         }
         .sheet(isPresented: $isPickerPresented) {
@@ -80,6 +88,7 @@ public struct ContentView: View {
         let url = URL(string: "https://prime-whole-fish.ngrok-free.app/upload")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
 
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
