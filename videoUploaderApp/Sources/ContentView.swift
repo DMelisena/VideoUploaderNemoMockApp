@@ -1,10 +1,18 @@
-import SwiftUI
 import PhotosUI
+import SwiftUI
+
+// Add struct to decode JSON response
+struct FileResponse: Codable {
+    let download_url: String
+    let message: String
+    let processing_time: String
+}
 
 public struct ContentView: View {
     @State private var videoURL: URL?
     @State private var isPickerPresented = false
     @State private var uploadStatus = ""
+    @State private var downloadURL = "" // Add state to store download URL
     @State private var helloWorldMessage = "Tap the button to fetch data."
     private let networkManager = NetworkManager()
 
@@ -14,13 +22,14 @@ public struct ContentView: View {
         VStack {
             Text(helloWorldMessage)
                 .padding()
+
             Button("Server Test") {
                 networkManager.fetchHelloWorld { result in
                     DispatchQueue.main.async {
                         switch result {
-                        case .success(let text):
+                        case let .success(text):
                             self.helloWorldMessage = text
-                        case .failure(let error):
+                        case let .failure(error):
                             self.helloWorldMessage = "Error: \(error.localizedDescription)"
                         }
                     }
@@ -45,6 +54,13 @@ public struct ContentView: View {
 
             Text(uploadStatus)
                 .padding()
+
+            // Display download URL if available
+            if !downloadURL.isEmpty {
+                Text("Download URL: \(downloadURL)")
+                    .padding()
+                    .foregroundColor(.blue)
+            }
         }
         .sheet(isPresented: $isPickerPresented) {
             VideoPicker(videoURL: $videoURL)
@@ -58,6 +74,7 @@ public struct ContentView: View {
         }
 
         uploadStatus = "Uploading..."
+        downloadURL = "" // Clear previous download URL
 
         // IMPORTANT: Replace with your computer's IP address if running on a real device
         let url = URL(string: "https://prime-whole-fish.ngrok-free.app/upload")!
@@ -91,21 +108,31 @@ public struct ContentView: View {
                     return
                 }
 
-                guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                guard let httpResponse = response as? HTTPURLResponse, (200 ... 299).contains(httpResponse.statusCode) else {
                     uploadStatus = "Upload failed with status code: \((response as? HTTPURLResponse)?.statusCode ?? -1)"
                     return
                 }
 
-                if let data = data, let responseString = String(data: data, encoding: .utf8), responseString == "1" {
-                    uploadStatus = "Upload successful!"
+                // Parse JSON response instead of checking for "1"
+                if let data = data {
+                    do {
+                        let fileResponse = try JSONDecoder().decode(FileResponse.self, from: data)
+                        uploadStatus = "Upload successful!"
+                        downloadURL = fileResponse.download_url
+                    } catch {
+                        uploadStatus = "Upload successful but failed to parse response: \(error.localizedDescription)"
+                        // Fallback: try to display raw response
+                        if let responseString = String(data: data, encoding: .utf8) {
+                            print("Raw response: \(responseString)")
+                        }
+                    }
                 } else {
-                    uploadStatus = "Upload failed with unknown error."
+                    uploadStatus = "Upload completed but no response data."
                 }
             }
         }.resume()
     }
 }
-
 
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
