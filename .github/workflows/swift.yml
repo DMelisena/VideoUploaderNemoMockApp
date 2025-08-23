@@ -1,0 +1,40 @@
+name: Tuist CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+      
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      # 1. Check out your repository's code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set the correct Xcode version (THIS IS THE FIX)
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@v1 #GA runner image macOS 15 upgrade
+        with:
+          xcode-version: '16.2'
+
+      # 3. Install Mise and Tuist
+      - name: Setup Mise and Tuist
+        uses: jdx/mise-action@v2
+
+      # 4. Run Tuist install
+      - name: Install dependencies
+        run: tuist install
+        env:
+          TUIST_CONFIG_TOKEN: ${{ secrets.TUIST_TOKEN}}
+
+      # 5. Run Tuist build
+      - name: Install dependencies
+        run: tuist build
+        env:
+          TUIST_CONFIG_TOKEN: ${{ secrets.TUIST_TOKEN}}
