@@ -23,7 +23,7 @@ let project = Project(
             sources: ["videoUploaderApp/Sources/**"],
             resources: ["videoUploaderApp/Resources/**"],
             dependencies: [
-                .package(url: "https://github.com/ZipArchive/ZipArchive.git", from: "2.4.0"),
+                .package(product: "ZipArchive"),
             ],
         ),
         .target(
