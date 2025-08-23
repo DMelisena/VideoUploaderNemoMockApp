@@ -1,40 +1,36 @@
 import ProjectDescription
 
 let project = Project(
-    name: "videoUploaderApp",
+    name: "VideoUploaderNemoMockApp",
     targets: [
         .target(
-            name: "videoUploaderApp",
+            name: "VideoUploaderNemoMockApp",
             destinations: .iOS,
             product: .app,
-            bundleId: "dev.tuist.videoUploaderApp",
+            bundleId: "dev.tuist.VideoUploaderNemoiMockApp",
             infoPlist: .extendingDefault(
                 with: [
                     "UILaunchScreen": [
                         "UIColorName": "",
                         "UIImageName": "",
                     ],
-                    "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to select videos for upload.",
-                    "NSAppTransportSecurity": [
-                        "NSAllowsArbitraryLoads": true, // For localhost, consider more specific exceptions for production
-                    ],
                 ]
             ),
-            sources: ["videoUploaderApp/Sources/**"],
-            resources: ["videoUploaderApp/Resources/**"],
+            sources: ["VideoUploaderNemoMockApp/Sources/**"],
+            resources: ["VideoUploaderNemoMockApp/Resources/**"],
             dependencies: [
-                .package(product: "ZipArchive"),
-            ],
+                .external(name: "ZipArchive"),
+            ]
         ),
         .target(
-            name: "videoUploaderAppTests",
+            name: "VideoUploaderNemoMockAppTests",
             destinations: .iOS,
             product: .unitTests,
-            bundleId: "dev.tuist.videoUploaderAppTests",
+            bundleId: "dev.tuist.VideoUploaderNemoMockAppTests",
             infoPlist: .default,
-            sources: ["videoUploaderApp/Tests/**"],
-            resources: [],
-            dependencies: [.target(name: "videoUploaderApp")]
+            sources: ["VideoUploaderNemoMockApp/Tests/**"],
+            dependencies: [.target(name: "VideoUploaderNemoMockApp")]
         ),
     ]
 )
+
