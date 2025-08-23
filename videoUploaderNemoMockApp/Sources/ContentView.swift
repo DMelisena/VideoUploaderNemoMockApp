@@ -221,7 +221,7 @@ public struct ContentView: View {
                         let fileResponse = try JSONDecoder().decode(FileResponse.self, from: data)
                         uploadStatus = "Upload successful! Ready to download results."
                         // Construct full download URL
-                        downloadURL = "https://prime-whole-fish.ngrok-free.app" + fileResponse.download_url
+                        downloadURL = fileResponse.download_url
                     } catch {
                         uploadStatus = "Upload successful but failed to parse response: \(error.localizedDescription)"
                         if let responseString = String(data: data, encoding: .utf8) {
