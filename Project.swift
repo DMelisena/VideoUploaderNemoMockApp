@@ -16,13 +16,15 @@ let project = Project(
                     ],
                     "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to select videos for upload.",
                     "NSAppTransportSecurity": [
-                        "NSAllowsArbitraryLoads": true // For localhost, consider more specific exceptions for production
-                    ]
+                        "NSAllowsArbitraryLoads": true, // For localhost, consider more specific exceptions for production
+                    ],
                 ]
             ),
             sources: ["videoUploaderApp/Sources/**"],
             resources: ["videoUploaderApp/Resources/**"],
-            dependencies: []
+            dependencies: [
+                .package(url: "https://github.com/ZipArchive/ZipArchive.git", from: "2.4.0"),
+            ],
         ),
         .target(
             name: "videoUploaderAppTests",
