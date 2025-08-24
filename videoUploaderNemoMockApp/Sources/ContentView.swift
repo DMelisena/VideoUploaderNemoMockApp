@@ -13,6 +13,7 @@ struct FolderItem: Identifiable, Hashable {
     let id = UUID()
     let name: String
     let images: [ImageItem]
+    let path: String // Add path for debugging
 }
 
 struct ImageItem: Identifiable, Hashable {
@@ -31,6 +32,7 @@ public struct ContentView: View {
     @State private var downloadProgress: Double = 0.0
     @State private var folders: [FolderItem] = []
     @State private var showGallery = false
+    @State private var debugInfo = "" // Add debug info state
 
     private let networkManager = NetworkManager()
 
@@ -92,6 +94,18 @@ public struct ContentView: View {
             Text(uploadStatus)
                 .padding()
 
+            // Show debug info if available
+            if !debugInfo.isEmpty {
+                ScrollView {
+                    Text(debugInfo)
+                        .font(.caption)
+                        .padding()
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                }
+                .frame(maxHeight: 100)
+            }
+
             // Download progress bar and cancel button
             if isDownloading {
                 VStack {
@@ -136,6 +150,7 @@ public struct ContentView: View {
             HStack {
                 Button("Back") {
                     showGallery = false
+                    debugInfo = "" // Clear debug info when going back
                 }
                 .padding()
 
@@ -176,6 +191,14 @@ public struct ContentView: View {
                                     .font(.caption)
                                     .foregroundColor(.gray)
                             }
+
+                            Spacer()
+
+                            // Show folder path for debugging
+                            Text(folder.path.replacingOccurrences(of: "/", with: "/\n"))
+                                .font(.system(size: 8))
+                                .foregroundColor(.blue)
+                                .multilineTextAlignment(.trailing)
                         }
                         .padding(.vertical, 4)
                     }
@@ -194,6 +217,7 @@ public struct ContentView: View {
         downloadURL = ""
         folders = []
         showGallery = false
+        debugInfo = ""
 
         let url = URL(string: "https://prime-whole-fish.ngrok-free.app/upload")!
         var request = URLRequest(url: url)
@@ -257,6 +281,7 @@ public struct ContentView: View {
         isDownloading = true
         downloadProgress = 0.0
         uploadStatus = "Starting download..."
+        debugInfo = ""
 
         downloadWithRetry(url: url, maxRetries: 3)
     }
@@ -434,6 +459,7 @@ public struct ContentView: View {
 
     private func organizeImagesIntoFolders(at path: URL) {
         var tempFolders: [FolderItem] = []
+        var debugMessages: [String] = []
 
         do {
             // Verify the extraction path exists
@@ -442,43 +468,19 @@ public struct ContentView: View {
                 return
             }
 
-            let contents = try FileManager.default.contentsOfDirectory(at: path, includingPropertiesForKeys: [.isDirectoryKey])
+            debugMessages.append("📁 Scanning: \(path.lastPathComponent)")
 
-            if contents.isEmpty {
-                uploadStatus = "Error: No files found in extracted archive"
-                return
-            }
+            // Recursively scan all directories
+            tempFolders = scanDirectoryRecursively(at: path, relativeTo: path, debugMessages: &debugMessages)
 
-            var totalImages = 0
+            // Update debug info
+            debugInfo = debugMessages.joined(separator: "\n")
 
-            for item in contents {
-                var isDirectory: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory) else {
-                    continue
-                }
-
-                if isDirectory.boolValue {
-                    // This is a folder, collect images from it
-                    let images = collectImages(from: item)
-                    if !images.isEmpty {
-                        let folder = FolderItem(name: item.lastPathComponent, images: images)
-                        tempFolders.append(folder)
-                        totalImages += images.count
-                    }
-                } else if isImageFile(item) {
-                    // This is a loose image file, create a "Root" folder
-                    let rootImages = collectImages(from: path, includeSubdirectories: false)
-                    if !rootImages.isEmpty {
-                        let rootFolder = FolderItem(name: "Root", images: rootImages)
-                        tempFolders.insert(rootFolder, at: 0)
-                        totalImages += rootImages.count
-                    }
-                    break // Only do this once
-                }
-            }
+            let totalImages = tempFolders.reduce(0) { $0 + $1.images.count }
 
             if tempFolders.isEmpty {
                 uploadStatus = "No image folders found in the archive"
+                debugInfo += "\n❌ No folders with images found"
                 return
             }
 
@@ -488,37 +490,79 @@ public struct ContentView: View {
 
         } catch {
             uploadStatus = "Error organizing images: \(error.localizedDescription)"
+            debugInfo = "Error: \(error.localizedDescription)"
             print("Error organizing images: \(error)")
         }
     }
 
-    private func collectImages(from folderURL: URL, includeSubdirectories: Bool = true) -> [ImageItem] {
-        var images: [ImageItem] = []
+    private func scanDirectoryRecursively(at currentPath: URL, relativeTo basePath: URL, debugMessages: inout [String]) -> [FolderItem] {
+        var folderItems: [FolderItem] = []
 
         do {
-            let contents = try FileManager.default.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil)
+            let contents = try FileManager.default.contentsOfDirectory(at: currentPath, includingPropertiesForKeys: [.isDirectoryKey, .fileResourceTypeKey])
 
+            var allFiles: [String] = []
+            var directories: [URL] = []
+            var imageFiles: [URL] = []
+            var otherFiles: [String] = []
+
+            // Categorize all items in this directory
             for item in contents {
                 var isDirectory: ObjCBool = false
                 FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory)
 
-                if isDirectory.boolValue, includeSubdirectories {
-                    // Recursively collect from subdirectories
-                    images.append(contentsOf: collectImages(from: item))
+                allFiles.append(item.lastPathComponent)
+
+                if isDirectory.boolValue {
+                    directories.append(item)
                 } else if isImageFile(item) {
-                    let imageItem = ImageItem(name: item.lastPathComponent, url: item)
-                    images.append(imageItem)
+                    imageFiles.append(item)
+                } else {
+                    otherFiles.append(item.lastPathComponent)
                 }
             }
+
+            // Create relative path for display
+            let relativePath = currentPath.path.replacingOccurrences(of: basePath.path, with: "")
+            let displayPath = relativePath.isEmpty ? "Root" : relativePath
+
+            debugMessages.append("\n📂 \(displayPath)")
+            debugMessages.append("   📄 All files (\(allFiles.count)): \(allFiles.joined(separator: ", "))")
+            debugMessages.append("   🖼️ Image files (\(imageFiles.count)): \(imageFiles.map { $0.lastPathComponent }.joined(separator: ", "))")
+            debugMessages.append("   📁 Directories (\(directories.count)): \(directories.map { $0.lastPathComponent }.joined(separator: ", "))")
+            debugMessages.append("   ❌ Ignored files (\(otherFiles.count)): \(otherFiles.joined(separator: ", "))")
+
+            // If current directory has images, create a folder item
+            if !imageFiles.isEmpty {
+                let imageItems = imageFiles.map { ImageItem(name: $0.lastPathComponent, url: $0) }
+                    .sorted { $0.name < $1.name }
+
+                let folderName = relativePath.isEmpty ? "Root Images" : currentPath.lastPathComponent
+                let folderItem = FolderItem(
+                    name: folderName,
+                    images: imageItems,
+                    path: displayPath
+                )
+                folderItems.append(folderItem)
+
+                debugMessages.append("   ✅ Created folder: '\(folderName)' with \(imageItems.count) images")
+            }
+
+            // Recursively process subdirectories
+            for directory in directories {
+                let subfolders = scanDirectoryRecursively(at: directory, relativeTo: basePath, debugMessages: &debugMessages)
+                folderItems.append(contentsOf: subfolders)
+            }
+
         } catch {
-            print("Error collecting images from \(folderURL): \(error)")
+            debugMessages.append("❌ Error scanning \(currentPath.lastPathComponent): \(error.localizedDescription)")
         }
 
-        return images.sorted { $0.name < $1.name }
+        return folderItems
     }
 
     private func isImageFile(_ url: URL) -> Bool {
-        let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"]
+        let imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "heic", "heif"]
         return imageExtensions.contains(url.pathExtension.lowercased())
     }
 }
