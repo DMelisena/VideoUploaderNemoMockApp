@@ -2,26 +2,6 @@ import PhotosUI
 import SwiftUI
 import ZipArchive
 
-// Add struct to decode JSON response
-struct FileResponse: Codable {
-    let download_url: String
-    let message: String
-    let processing_time: String
-}
-
-struct FolderItem: Identifiable, Hashable {
-    let id = UUID()
-    let name: String
-    let images: [ImageItem]
-    let path: String // Add path for debugging
-}
-
-struct ImageItem: Identifiable, Hashable {
-    let id = UUID()
-    let name: String
-    let url: URL
-}
-
 public struct ContentView: View {
     @State private var videoURL: URL?
     @State private var isPickerPresented = false
@@ -32,7 +12,7 @@ public struct ContentView: View {
     @State private var downloadProgress: Double = 0.0
     @State private var folders: [FolderItem] = []
     @State private var showGallery = false
-    @State private var debugInfo = "" // Add debug info state
+    @State private var debugInfo = ""
     @State private var showDownloadedFiles = false
 
     private let networkManager = NetworkManager()
@@ -44,7 +24,7 @@ public struct ContentView: View {
 
     public var body: some View {
         if showDownloadedFiles {
-            DownloadedFilesView()
+            DownloadedFilesView(showDownloadedFiles: $showDownloadedFiles)
         } else {
             NavigationView {
                 VStack {
@@ -154,8 +134,7 @@ public struct ContentView: View {
             VideoPicker(videoURL: $videoURL)
         }
     }
-    
-    // Fix 4: Add upload progress tracking (optional enhancement)
+
     private func uploadVideo() {
         guard let videoURL = videoURL else {
             uploadStatus = "Please select a video first."
@@ -188,7 +167,6 @@ public struct ContentView: View {
         body.append(videoData)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
-        // Create upload task for progress tracking
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 1200
@@ -197,12 +175,10 @@ public struct ContentView: View {
 
         let uploadTask = session.uploadTask(with: request, from: body) { data, response, error in
             DispatchQueue.main.async {
-                // Handle response same as before
                 self.handleUploadResponse(data: data, response: response, error: error)
             }
         }
 
-        // Track upload progress
         _ = uploadTask.progress.observe(\.fractionCompleted) { progress, _ in
             DispatchQueue.main.async {
                 let percentage = Int(progress.fractionCompleted * 100)
@@ -223,7 +199,6 @@ public struct ContentView: View {
             return
         }
 
-        // Handle successful response...
         guard let httpResponse = response as? HTTPURLResponse, (200 ... 299).contains(httpResponse.statusCode) else {
             uploadStatus = "Upload failed with status code: \((response as? HTTPURLResponse)?.statusCode ?? -1)"
             return
@@ -233,7 +208,8 @@ public struct ContentView: View {
             do {
                 let fileResponse = try JSONDecoder().decode(FileResponse.self, from: data)
                 uploadStatus = "Upload successful! Ready to download results."
-                downloadURL = "https://prime-whole-fish.ngrok-free.app" + fileResponse.download_url
+                downloadURL = fileResponse.download_url
+                // we got the full link from the server, don't add another link here
                 print("Download URL received: \(downloadURL)")
             } catch {
                 uploadStatus = "Upload successful but failed to parse response: \(error.localizedDescription)"
@@ -255,31 +231,28 @@ public struct ContentView: View {
     private func downloadWithRetry(url: URL, maxRetries: Int, currentRetry: Int = 0) {
         var request = URLRequest(url: url)
         request.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
-        request.timeoutInterval = 300 // 5 minutes timeout
+        request.timeoutInterval = 300
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 300
-        config.timeoutIntervalForResource = 600 // 10 minutes total
+        config.timeoutIntervalForResource = 600
         config.waitsForConnectivity = true
 
         let session = URLSession(configuration: config)
 
         let downloadTaskInstance = session.downloadTask(with: request) { localURL, _, error in
             DispatchQueue.main.async {
-                // Clear the download task reference and observer
                 self.downloadTask = nil
                 self.progressObserver?.invalidate()
                 self.progressObserver = nil
 
                 if let error = error as NSError? {
-                    // Check if it was cancelled by user
                     if error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled {
                         self.isDownloading = false
                         self.uploadStatus = "Download cancelled by user"
                         return
                     }
 
-                    // Check if it's a network timeout or connection lost error
                     if error.domain == NSURLErrorDomain,
                        error.code == NSURLErrorTimedOut ||
                        error.code == NSURLErrorNetworkConnectionLost ||
@@ -288,7 +261,6 @@ public struct ContentView: View {
                     {
                         self.uploadStatus = "Connection lost. Retrying (\(currentRetry + 1)/\(maxRetries))..."
 
-                        // Wait a bit before retrying
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                             self.downloadWithRetry(url: url, maxRetries: maxRetries, currentRetry: currentRetry + 1)
                         }
@@ -310,7 +282,6 @@ public struct ContentView: View {
                     return
                 }
 
-                // Check if we actually got a file
                 do {
                     let fileSize = try localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                     if fileSize == 0 {
@@ -323,15 +294,12 @@ public struct ContentView: View {
                     return
                 }
 
-                // Unzip the file
                 self.unzipAndOrganizeImages(from: localURL)
             }
         }
 
-        // Store the download task for potential cancellation
         downloadTask = downloadTaskInstance
 
-        // Add progress tracking
         progressObserver = downloadTaskInstance.progress.observe(\.fractionCompleted) { progress, _ in
             DispatchQueue.main.async {
                 self.downloadProgress = progress.fractionCompleted
@@ -354,7 +322,6 @@ public struct ContentView: View {
         let extractPath = documentsPath.appendingPathComponent("ExtractedImages_\(UUID().uuidString.prefix(8))")
 
         do {
-            // Clean up any previous extractions (keep only most recent 3)
             let existingExtractions = try FileManager.default.contentsOfDirectory(at: documentsPath, includingPropertiesForKeys: [.creationDateKey])
                 .filter { $0.lastPathComponent.hasPrefix("ExtractedImages_") }
                 .sorted { url1, url2 in
@@ -363,23 +330,19 @@ public struct ContentView: View {
                     return date1 > date2
                 }
 
-            // Remove old extractions, keep only 2 most recent
             if existingExtractions.count > 2 {
                 for oldExtraction in existingExtractions.dropFirst(2) {
                     try? FileManager.default.removeItem(at: oldExtraction)
                 }
             }
 
-            // Create extraction directory
             try FileManager.default.createDirectory(at: extractPath, withIntermediateDirectories: true)
 
-            // Check if ZIP file exists and is valid
             guard FileManager.default.fileExists(atPath: zipURL.path) else {
                 uploadStatus = "Error: ZIP file not found"
                 return
             }
 
-            // Check file size
             let attributes = try FileManager.default.attributesOfItem(atPath: zipURL.path)
             let fileSize = attributes[.size] as? Int64 ?? 0
 
@@ -390,7 +353,6 @@ public struct ContentView: View {
 
             uploadStatus = "Extracting ZIP file (\(ByteCountFormatter().string(fromByteCount: fileSize)))..."
 
-            // Unzip using ZipArchive with error checking
             let success = SSZipArchive.unzipFile(
                 atPath: zipURL.path,
                 toDestination: extractPath.path,
@@ -403,7 +365,6 @@ public struct ContentView: View {
                     DispatchQueue.main.async {
                         if succeeded {
                             self.uploadStatus = "Extraction complete. Organizing images..."
-                            // Small delay to let user see the completion message
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                                 self.organizeImagesIntoFolders(at: extractPath)
                                 self.saveDownloadedFolder(at: extractPath)
@@ -436,18 +397,13 @@ public struct ContentView: View {
         var debugMessages: [String] = []
 
         do {
-            // Verify the extraction path exists
             guard FileManager.default.fileExists(atPath: path.path) else {
                 uploadStatus = "Error: Extracted folder not found"
                 return
             }
 
             debugMessages.append("📁 Scanning: \(path.lastPathComponent)")
-
-            // Recursively scan all directories
             tempFolders = scanDirectoryRecursively(at: path, relativeTo: path, debugMessages: &debugMessages)
-
-            // Update debug info
             debugInfo = debugMessages.joined(separator: "\n")
 
             let totalImages = tempFolders.reduce(0) { $0 + $1.images.count }
@@ -480,7 +436,6 @@ public struct ContentView: View {
             var imageFiles: [URL] = []
             var otherFiles: [String] = []
 
-            // Categorize all items in this directory
             for item in contents {
                 var isDirectory: ObjCBool = false
                 FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory)
@@ -496,7 +451,6 @@ public struct ContentView: View {
                 }
             }
 
-            // Create relative path for display
             let relativePath = currentPath.path.replacingOccurrences(of: basePath.path, with: "")
             let displayPath = relativePath.isEmpty ? "Root" : relativePath
 
@@ -506,7 +460,6 @@ public struct ContentView: View {
             debugMessages.append("   📁 Directories (\(directories.count)): \(directories.map { $0.lastPathComponent }.joined(separator: ", "))")
             debugMessages.append("   ❌ Ignored files (\(otherFiles.count)): \(otherFiles.joined(separator: ", "))")
 
-            // If current directory has images, create a folder item
             if !imageFiles.isEmpty {
                 let imageItems = imageFiles.map { ImageItem(name: $0.lastPathComponent, url: $0) }
                     .sorted { $0.name < $1.name }
@@ -522,7 +475,6 @@ public struct ContentView: View {
                 debugMessages.append("   ✅ Created folder: '\(folderName)' with \(imageItems.count) images")
             }
 
-            // Recursively process subdirectories
             for directory in directories {
                 let subfolders = scanDirectoryRecursively(at: directory, relativeTo: basePath, debugMessages: &debugMessages)
                 folderItems.append(contentsOf: subfolders)
@@ -540,6 +492,8 @@ public struct ContentView: View {
         return imageExtensions.contains(url.pathExtension.lowercased())
     }
 }
+
+// MARK: - Gallery Views
 
 struct GalleryView: View {
     let folders: [FolderItem]
@@ -568,7 +522,6 @@ struct GalleryView: View {
                 List(folders, id: \.id) { folder in
                     NavigationLink(destination: FolderDetailView(folder: folder)) {
                         HStack {
-                            // Show first image as thumbnail
                             if let firstImage = folder.images.first {
                                 AsyncImage(url: firstImage.url) { image in
                                     image
@@ -593,7 +546,6 @@ struct GalleryView: View {
 
                             Spacer()
 
-                            // Show folder path for debugging
                             Text(folder.path.replacingOccurrences(of: "/", with: "/\n"))
                                 .font(.system(size: 8))
                                 .foregroundColor(.blue)
@@ -607,7 +559,6 @@ struct GalleryView: View {
     }
 }
 
-// Folder detail view to show all images in a folder
 struct FolderDetailView: View {
     let folder: FolderItem
     @State private var selectedImage: ImageItem?
@@ -650,7 +601,6 @@ struct FolderDetailView: View {
     }
 }
 
-// Full screen image viewer
 struct ImageDetailView: View {
     let image: ImageItem
     @Environment(\.dismiss) private var dismiss
@@ -676,31 +626,6 @@ struct ImageDetailView: View {
         }
     }
 }
-
-struct DownloadedFilesView: View {
-    @State private var downloadedFolders: [URL] = []
-
-    var body: some View {
-        VStack {
-            Text("Downloaded Content")
-                .font(.largeTitle)
-                .padding()
-
-            List(downloadedFolders, id: \.self) { folderURL in
-                Text(folderURL.lastPathComponent)
-            }
-        }
-        .onAppear(perform: loadDownloadedFolders)
-    }
-
-    private func loadDownloadedFolders() {
-        let defaults = UserDefaults.standard
-        if let downloadedPaths = defaults.array(forKey: "downloadedFolders") as? [String] {
-            downloadedFolders = downloadedPaths.map { URL(fileURLWithPath: $0) }
-        }
-    }
-}
-
 
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {

@@ -1,55 +1,88 @@
 import SwiftUI
 
-struct FolderItem: Identifiable, Hashable {
-    let id = UUID()
-    let name: String
-    let images: [ImageItem]
-    let path: String // Add path for debugging
-}
-
-struct ImageItem: Identifiable, Hashable {
-    let id = UUID()
-    let name: String
-    let url: URL
-}
-
 struct DownloadedFilesView: View {
+    @Binding var showDownloadedFiles: Bool
     @State private var downloadedFolders: [URL] = []
 
     var body: some View {
         NavigationView {
-            List(downloadedFolders, id: \.self) { folderURL in
-                NavigationLink(destination: GalleryView(rootURL: folderURL)) {
-                    Text(folderURL.lastPathComponent)
+            VStack {
+                HStack {
+                    Button("Back") {
+                        showDownloadedFiles = false
+                    }
+                    .padding()
+
+                    Spacer()
+
+                    Text("Downloaded Files")
+                        .font(.title)
+                        .fontWeight(.semibold)
+
+                    Spacer()
+
+                    // Empty space for symmetry
+                    Button("") {}
+                        .disabled(true)
+                        .opacity(0)
+                        .padding()
+                }
+
+                if downloadedFolders.isEmpty {
+                    Spacer()
+                    Text("No downloaded files yet")
+                        .foregroundColor(.gray)
+                        .font(.body)
+                    Spacer()
+                } else {
+                    List(downloadedFolders, id: \.self) { folderURL in
+                        NavigationLink(destination: DownloadedGalleryView(rootURL: folderURL)) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(folderURL.lastPathComponent)
+                                    .font(.headline)
+                                Text("Tap to view images")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
                 }
             }
-            .navigationTitle("Downloaded Files")
-            .onAppear(perform: loadDownloadedFolders)
         }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .onAppear(perform: loadDownloadedFolders)
     }
 
     private func loadDownloadedFolders() {
         let defaults = UserDefaults.standard
         if let downloadedPaths = defaults.array(forKey: "downloadedFolders") as? [String] {
-            downloadedFolders = downloadedPaths.map { URL(fileURLWithPath: $0) }
+            downloadedFolders = downloadedPaths.compactMap { path in
+                let url = URL(fileURLWithPath: path)
+                return FileManager.default.fileExists(atPath: url.path) ? url : nil
+            }
         }
     }
 }
 
-struct GalleryView: View {
+struct DownloadedGalleryView: View {
     let rootURL: URL
     @State private var folders: [FolderItem] = []
     @State private var debugInfo = ""
+    @State private var isLoading = true
 
     var body: some View {
         VStack {
-            if folders.isEmpty {
+            if isLoading {
+                ProgressView("Loading images...")
+                    .padding()
+            } else if folders.isEmpty {
                 Text("No images found in this download.")
                     .foregroundColor(.gray)
                     .padding()
             } else {
                 List(folders, id: \.id) { folder in
-                    NavigationLink(destination: FolderDetailView(folder: folder)) {
+                    NavigationLink(destination: DownloadedFolderDetailView(folder: folder)) {
                         HStack {
                             if let firstImage = folder.images.first {
                                 AsyncImage(url: firstImage.url) { image in
@@ -72,41 +105,57 @@ struct GalleryView: View {
                                     .font(.caption)
                                     .foregroundColor(.gray)
                             }
+
+                            Spacer()
                         }
+                        .padding(.vertical, 4)
                     }
                 }
             }
         }
         .navigationTitle(rootURL.lastPathComponent)
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             organizeImagesIntoFolders(at: rootURL)
         }
     }
 
     private func organizeImagesIntoFolders(at path: URL) {
+        isLoading = true
         var tempFolders: [FolderItem] = []
         var debugMessages: [String] = []
 
-        do {
-            guard FileManager.default.fileExists(atPath: path.path) else {
-                debugInfo = "Error: Extracted folder not found"
-                return
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                guard FileManager.default.fileExists(atPath: path.path) else {
+                    DispatchQueue.main.async {
+                        self.debugInfo = "Error: Extracted folder not found"
+                        self.isLoading = false
+                    }
+                    return
+                }
+
+                debugMessages.append("📁 Scanning: \(path.lastPathComponent)")
+                tempFolders = self.scanDirectoryRecursively(at: path, relativeTo: path, debugMessages: &debugMessages)
+                let totalImages = tempFolders.reduce(0) { $0 + $1.images.count }
+
+                DispatchQueue.main.async {
+                    if tempFolders.isEmpty {
+                        self.debugInfo += "\n❌ No folders with images found"
+                    } else {
+                        self.folders = tempFolders
+                        self.debugInfo = "Success! Found \(totalImages) images in \(tempFolders.count) folders"
+                    }
+                    self.isLoading = false
+                }
+
+            } catch {
+                DispatchQueue.main.async {
+                    self.debugInfo = "Error organizing images: \(error.localizedDescription)"
+                    self.isLoading = false
+                }
+                print("Error organizing images: \(error)")
             }
-
-            debugMessages.append("📁 Scanning: \(path.lastPathComponent)")
-            tempFolders = scanDirectoryRecursively(at: path, relativeTo: path, debugMessages: &debugMessages)
-            let totalImages = tempFolders.reduce(0) { $0 + $1.images.count }
-
-            if tempFolders.isEmpty {
-                debugInfo += "\n❌ No folders with images found"
-            } else {
-                folders = tempFolders
-                debugInfo = "Success! Found \(totalImages) images in \(tempFolders.count) folders"
-            }
-
-        } catch {
-            debugInfo = "Error organizing images: \(error.localizedDescription)"
-            print("Error organizing images: \(error)")
         }
     }
 
@@ -164,8 +213,9 @@ struct GalleryView: View {
     }
 }
 
-// Folder detail view to show all images in a folder
-struct FolderDetailView: View {
+// MARK: - Downloaded Folder Detail View
+
+struct DownloadedFolderDetailView: View {
     let folder: FolderItem
     @State private var selectedImage: ImageItem?
 
@@ -200,13 +250,14 @@ struct FolderDetailView: View {
         .navigationTitle(folder.name)
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $selectedImage) { image in
-            ImageDetailView(image: image)
+            DownloadedImageDetailView(image: image)
         }
     }
 }
 
-// Full screen image viewer
-struct ImageDetailView: View {
+// MARK: - Downloaded Image Detail View
+
+struct DownloadedImageDetailView: View {
     let image: ImageItem
     @Environment(\.dismiss) private var dismiss
 
@@ -231,3 +282,4 @@ struct ImageDetailView: View {
         }
     }
 }
+
