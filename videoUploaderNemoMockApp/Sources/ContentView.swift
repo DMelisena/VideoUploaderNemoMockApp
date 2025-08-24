@@ -33,6 +33,7 @@ public struct ContentView: View {
     @State private var folders: [FolderItem] = []
     @State private var showGallery = false
     @State private var debugInfo = "" // Add debug info state
+    @State private var showDownloadedFiles = false
 
     private let networkManager = NetworkManager()
 
@@ -42,18 +43,27 @@ public struct ContentView: View {
     @State private var progressObserver: NSKeyValueObservation?
 
     public var body: some View {
-        NavigationView {
-            VStack {
-                if !showGallery {
-                    // Original upload interface
-                    uploadInterfaceView
-                } else {
-                    // Gallery view
-                    galleryView
+        if showDownloadedFiles {
+            DownloadedFilesView()
+        } else {
+            NavigationView {
+                VStack {
+                    if !showGallery {
+                        // Original upload interface
+                        uploadInterfaceView
+                    } else {
+                        // Gallery view
+                        GalleryView(folders: folders, showGallery: $showGallery)
+                    }
                 }
+                .navigationTitle(showGallery ? "Gallery" : "Video Processor")
+                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarItems(trailing: Button(action: {
+                    showDownloadedFiles = true
+                }) {
+                    Text("Downloads")
+                })
             }
-            .navigationTitle(showGallery ? "Gallery" : "Video Processor")
-            .navigationBarTitleDisplayMode(.inline)
         }
     }
 
@@ -144,69 +154,7 @@ public struct ContentView: View {
             VideoPicker(videoURL: $videoURL)
         }
     }
-
-    private var galleryView: some View {
-        VStack {
-            HStack {
-                Button("Back") {
-                    showGallery = false
-                    debugInfo = "" // Clear debug info when going back
-                }
-                .padding()
-
-                Spacer()
-
-                Text("\(folders.count) folders")
-                    .font(.caption)
-                    .padding()
-            }
-
-            if folders.isEmpty {
-                Text("No images found")
-                    .foregroundColor(.gray)
-                    .padding()
-            } else {
-                List(folders, id: \.id) { folder in
-                    NavigationLink(destination: FolderDetailView(folder: folder)) {
-                        HStack {
-                            // Show first image as thumbnail
-                            if let firstImage = folder.images.first {
-                                AsyncImage(url: firstImage.url) { image in
-                                    image
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                } placeholder: {
-                                    Rectangle()
-                                        .foregroundColor(.gray.opacity(0.3))
-                                }
-                                .frame(width: 60, height: 60)
-                                .clipped()
-                                .cornerRadius(8)
-                            }
-
-                            VStack(alignment: .leading) {
-                                Text(folder.name)
-                                    .font(.headline)
-                                Text("\(folder.images.count) images")
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                            }
-
-                            Spacer()
-
-                            // Show folder path for debugging
-                            Text(folder.path.replacingOccurrences(of: "/", with: "/\n"))
-                                .font(.system(size: 8))
-                                .foregroundColor(.blue)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-            }
-        }
-    }
-
+    
     // Fix 4: Add upload progress tracking (optional enhancement)
     private func uploadVideo() {
         guard let videoURL = videoURL else {
@@ -286,6 +234,7 @@ public struct ContentView: View {
                 let fileResponse = try JSONDecoder().decode(FileResponse.self, from: data)
                 uploadStatus = "Upload successful! Ready to download results."
                 downloadURL = "https://prime-whole-fish.ngrok-free.app" + fileResponse.download_url
+                print("Download URL received: \(downloadURL)")
             } catch {
                 uploadStatus = "Upload successful but failed to parse response: \(error.localizedDescription)"
             }
@@ -297,7 +246,7 @@ public struct ContentView: View {
 
         isDownloading = true
         downloadProgress = 0.0
-        uploadStatus = "Starting download..."
+        uploadStatus = "Starting download from \(downloadURL)..."
         debugInfo = ""
 
         downloadWithRetry(url: url, maxRetries: 3)
@@ -457,6 +406,7 @@ public struct ContentView: View {
                             // Small delay to let user see the completion message
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                                 self.organizeImagesIntoFolders(at: extractPath)
+                                self.saveDownloadedFolder(at: extractPath)
                             }
                         } else {
                             self.uploadStatus = "Extraction failed: \(error?.localizedDescription ?? "Unknown error")"
@@ -472,6 +422,13 @@ public struct ContentView: View {
         } catch {
             uploadStatus = "Error preparing extraction: \(error.localizedDescription)"
         }
+    }
+
+    private func saveDownloadedFolder(at path: URL) {
+        let defaults = UserDefaults.standard
+        var downloadedPaths = defaults.array(forKey: "downloadedFolders") as? [String] ?? []
+        downloadedPaths.append(path.path)
+        defaults.set(downloadedPaths, forKey: "downloadedFolders")
     }
 
     private func organizeImagesIntoFolders(at path: URL) {
@@ -584,6 +541,72 @@ public struct ContentView: View {
     }
 }
 
+struct GalleryView: View {
+    let folders: [FolderItem]
+    @Binding var showGallery: Bool
+
+    var body: some View {
+        VStack {
+            HStack {
+                Button("Back") {
+                    showGallery = false
+                }
+                .padding()
+
+                Spacer()
+
+                Text("\(folders.count) folders")
+                    .font(.caption)
+                    .padding()
+            }
+
+            if folders.isEmpty {
+                Text("No images found")
+                    .foregroundColor(.gray)
+                    .padding()
+            } else {
+                List(folders, id: \.id) { folder in
+                    NavigationLink(destination: FolderDetailView(folder: folder)) {
+                        HStack {
+                            // Show first image as thumbnail
+                            if let firstImage = folder.images.first {
+                                AsyncImage(url: firstImage.url) { image in
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                } placeholder: {
+                                    Rectangle()
+                                        .foregroundColor(.gray.opacity(0.3))
+                                }
+                                .frame(width: 60, height: 60)
+                                .clipped()
+                                .cornerRadius(8)
+                            }
+
+                            VStack(alignment: .leading) {
+                                Text(folder.name)
+                                    .font(.headline)
+                                Text("\(folder.images.count) images")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+
+                            Spacer()
+
+                            // Show folder path for debugging
+                            Text(folder.path.replacingOccurrences(of: "/", with: "/\n"))
+                                .font(.system(size: 8))
+                                .foregroundColor(.blue)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Folder detail view to show all images in a folder
 struct FolderDetailView: View {
     let folder: FolderItem
@@ -653,6 +676,31 @@ struct ImageDetailView: View {
         }
     }
 }
+
+struct DownloadedFilesView: View {
+    @State private var downloadedFolders: [URL] = []
+
+    var body: some View {
+        VStack {
+            Text("Downloaded Content")
+                .font(.largeTitle)
+                .padding()
+
+            List(downloadedFolders, id: \.self) { folderURL in
+                Text(folderURL.lastPathComponent)
+            }
+        }
+        .onAppear(perform: loadDownloadedFolders)
+    }
+
+    private func loadDownloadedFolders() {
+        let defaults = UserDefaults.standard
+        if let downloadedPaths = defaults.array(forKey: "downloadedFolders") as? [String] {
+            downloadedFolders = downloadedPaths.map { URL(fileURLWithPath: $0) }
+        }
+    }
+}
+
 
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
