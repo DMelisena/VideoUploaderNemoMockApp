@@ -36,6 +36,9 @@ public struct ContentView: View {
 
     public init() {}
 
+    @State private var downloadTask: URLSessionDownloadTask?
+    @State private var progressObserver: NSKeyValueObservation?
+
     public var body: some View {
         NavigationView {
             VStack {
@@ -89,11 +92,24 @@ public struct ContentView: View {
             Text(uploadStatus)
                 .padding()
 
-            // Download progress bar
+            // Download progress bar and cancel button
             if isDownloading {
                 VStack {
-                    ProgressView("Downloading...", value: downloadProgress, total: 1.0)
-                        .padding()
+                    HStack {
+                        ProgressView("Downloading...", value: downloadProgress, total: 1.0)
+
+                        Button("Cancel") {
+                            downloadTask?.cancel()
+                            progressObserver?.invalidate()
+                            progressObserver = nil
+                            isDownloading = false
+                            uploadStatus = "Download cancelled"
+                        }
+                        .padding(.leading, 8)
+                        .foregroundColor(.red)
+                    }
+                    .padding()
+
                     Text("\(Int(downloadProgress * 100))%")
                         .font(.caption)
                 }
@@ -221,7 +237,7 @@ public struct ContentView: View {
                         let fileResponse = try JSONDecoder().decode(FileResponse.self, from: data)
                         uploadStatus = "Upload successful! Ready to download results."
                         // Construct full download URL
-                        downloadURL = fileResponse.download_url
+                        downloadURL = "https://prime-whole-fish.ngrok-free.app" + fileResponse.download_url
                     } catch {
                         uploadStatus = "Upload successful but failed to parse response: \(error.localizedDescription)"
                         if let responseString = String(data: data, encoding: .utf8) {
@@ -240,53 +256,179 @@ public struct ContentView: View {
 
         isDownloading = true
         downloadProgress = 0.0
+        uploadStatus = "Starting download..."
 
+        downloadWithRetry(url: url, maxRetries: 3)
+    }
+
+    private func downloadWithRetry(url: URL, maxRetries: Int, currentRetry: Int = 0) {
         var request = URLRequest(url: url)
         request.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
+        request.timeoutInterval = 300 // 5 minutes timeout
 
-        URLSession.shared.downloadTask(with: request) { localURL, _, error in
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 600 // 10 minutes total
+        config.waitsForConnectivity = true
+
+        let session = URLSession(configuration: config)
+
+        let downloadTaskInstance = session.downloadTask(with: request) { localURL, _, error in
             DispatchQueue.main.async {
-                self.isDownloading = false
+                // Clear the download task reference and observer
+                self.downloadTask = nil
+                self.progressObserver?.invalidate()
+                self.progressObserver = nil
 
-                if let error = error {
-                    self.uploadStatus = "Download failed: \(error.localizedDescription)"
-                    return
+                if let error = error as NSError? {
+                    // Check if it was cancelled by user
+                    if error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled {
+                        self.isDownloading = false
+                        self.uploadStatus = "Download cancelled by user"
+                        return
+                    }
+
+                    // Check if it's a network timeout or connection lost error
+                    if error.domain == NSURLErrorDomain,
+                       error.code == NSURLErrorTimedOut ||
+                       error.code == NSURLErrorNetworkConnectionLost ||
+                       error.code == NSURLErrorNotConnectedToInternet,
+                       currentRetry < maxRetries
+                    {
+                        self.uploadStatus = "Connection lost. Retrying (\(currentRetry + 1)/\(maxRetries))..."
+
+                        // Wait a bit before retrying
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            self.downloadWithRetry(url: url, maxRetries: maxRetries, currentRetry: currentRetry + 1)
+                        }
+                        return
+                    } else {
+                        self.isDownloading = false
+                        self.uploadStatus = "Download failed: \(error.localizedDescription)"
+                        if currentRetry >= maxRetries {
+                            self.uploadStatus += " (Max retries reached)"
+                        }
+                        return
+                    }
                 }
+
+                self.isDownloading = false
 
                 guard let localURL = localURL else {
                     self.uploadStatus = "Download failed: No file received"
                     return
                 }
 
+                // Check if we actually got a file
+                do {
+                    let fileSize = try localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    if fileSize == 0 {
+                        self.uploadStatus = "Download failed: Empty file received"
+                        return
+                    }
+                    self.uploadStatus = "Download complete. Extracting files..."
+                } catch {
+                    self.uploadStatus = "Download failed: Could not verify file"
+                    return
+                }
+
                 // Unzip the file
                 self.unzipAndOrganizeImages(from: localURL)
             }
-        }.resume()
+        }
+
+        // Store the download task for potential cancellation
+        downloadTask = downloadTaskInstance
+
+        // Add progress tracking
+        progressObserver = downloadTaskInstance.progress.observe(\.fractionCompleted) { progress, _ in
+            DispatchQueue.main.async {
+                self.downloadProgress = progress.fractionCompleted
+                if progress.fractionCompleted > 0 {
+                    let mbDownloaded = Double(progress.completedUnitCount) / 1024.0 / 1024.0
+                    let mbTotal = Double(progress.totalUnitCount) / 1024.0 / 1024.0
+                    self.uploadStatus = String(format: "Downloading... %.1f/%.1f MB (%.0f%%)",
+                                               mbDownloaded, mbTotal, progress.fractionCompleted * 100)
+                }
+            }
+        }
+
+        downloadTaskInstance.resume()
     }
 
     private func unzipAndOrganizeImages(from zipURL: URL) {
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let extractPath = documentsPath.appendingPathComponent("ExtractedImages")
+        uploadStatus = "Extracting files..."
 
-        // Clean up previous extractions
-        try? FileManager.default.removeItem(at: extractPath)
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let extractPath = documentsPath.appendingPathComponent("ExtractedImages_\(UUID().uuidString.prefix(8))")
 
         do {
+            // Clean up any previous extractions (keep only most recent 3)
+            let existingExtractions = try FileManager.default.contentsOfDirectory(at: documentsPath, includingPropertiesForKeys: [.creationDateKey])
+                .filter { $0.lastPathComponent.hasPrefix("ExtractedImages_") }
+                .sorted { url1, url2 in
+                    let date1 = (try? url1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                    let date2 = (try? url2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                    return date1 > date2
+                }
+
+            // Remove old extractions, keep only 2 most recent
+            if existingExtractions.count > 2 {
+                for oldExtraction in existingExtractions.dropFirst(2) {
+                    try? FileManager.default.removeItem(at: oldExtraction)
+                }
+            }
+
             // Create extraction directory
             try FileManager.default.createDirectory(at: extractPath, withIntermediateDirectories: true)
 
-            // Unzip using ZipArchive (you'll need to add this dependency)
-            let success = SSZipArchive.unzipFile(atPath: zipURL.path, toDestination: extractPath.path)
-
-            if success {
-                organizeImagesIntoFolders(at: extractPath)
-                uploadStatus = "Processing complete! View your results below."
-                showGallery = true
-            } else {
-                uploadStatus = "Failed to extract zip file"
+            // Check if ZIP file exists and is valid
+            guard FileManager.default.fileExists(atPath: zipURL.path) else {
+                uploadStatus = "Error: ZIP file not found"
+                return
             }
+
+            // Check file size
+            let attributes = try FileManager.default.attributesOfItem(atPath: zipURL.path)
+            let fileSize = attributes[.size] as? Int64 ?? 0
+
+            if fileSize == 0 {
+                uploadStatus = "Error: ZIP file is empty"
+                return
+            }
+
+            uploadStatus = "Extracting ZIP file (\(ByteCountFormatter().string(fromByteCount: fileSize)))..."
+
+            // Unzip using ZipArchive with error checking
+            let success = SSZipArchive.unzipFile(
+                atPath: zipURL.path,
+                toDestination: extractPath.path,
+                progressHandler: { _, _, entryNumber, total in
+                    DispatchQueue.main.async {
+                        self.uploadStatus = "Extracting: \(entryNumber + 1)/\(total) files"
+                    }
+                },
+                completionHandler: { _, succeeded, error in
+                    DispatchQueue.main.async {
+                        if succeeded {
+                            self.uploadStatus = "Extraction complete. Organizing images..."
+                            // Small delay to let user see the completion message
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                self.organizeImagesIntoFolders(at: extractPath)
+                            }
+                        } else {
+                            self.uploadStatus = "Extraction failed: \(error?.localizedDescription ?? "Unknown error")"
+                        }
+                    }
+                }
+            )
+
+            if !success {
+                uploadStatus = "Failed to start extraction"
+            }
+
         } catch {
-            uploadStatus = "Error extracting files: \(error.localizedDescription)"
+            uploadStatus = "Error preparing extraction: \(error.localizedDescription)"
         }
     }
 
@@ -294,11 +436,26 @@ public struct ContentView: View {
         var tempFolders: [FolderItem] = []
 
         do {
-            let contents = try FileManager.default.contentsOfDirectory(at: path, includingPropertiesForKeys: nil)
+            // Verify the extraction path exists
+            guard FileManager.default.fileExists(atPath: path.path) else {
+                uploadStatus = "Error: Extracted folder not found"
+                return
+            }
+
+            let contents = try FileManager.default.contentsOfDirectory(at: path, includingPropertiesForKeys: [.isDirectoryKey])
+
+            if contents.isEmpty {
+                uploadStatus = "Error: No files found in extracted archive"
+                return
+            }
+
+            var totalImages = 0
 
             for item in contents {
                 var isDirectory: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory) else { continue }
+                guard FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory) else {
+                    continue
+                }
 
                 if isDirectory.boolValue {
                     // This is a folder, collect images from it
@@ -306,6 +463,7 @@ public struct ContentView: View {
                     if !images.isEmpty {
                         let folder = FolderItem(name: item.lastPathComponent, images: images)
                         tempFolders.append(folder)
+                        totalImages += images.count
                     }
                 } else if isImageFile(item) {
                     // This is a loose image file, create a "Root" folder
@@ -313,13 +471,23 @@ public struct ContentView: View {
                     if !rootImages.isEmpty {
                         let rootFolder = FolderItem(name: "Root", images: rootImages)
                         tempFolders.insert(rootFolder, at: 0)
+                        totalImages += rootImages.count
                     }
                     break // Only do this once
                 }
             }
 
+            if tempFolders.isEmpty {
+                uploadStatus = "No image folders found in the archive"
+                return
+            }
+
             folders = tempFolders
+            uploadStatus = "Success! Found \(totalImages) images in \(tempFolders.count) folders"
+            showGallery = true
+
         } catch {
+            uploadStatus = "Error organizing images: \(error.localizedDescription)"
             print("Error organizing images: \(error)")
         }
     }
