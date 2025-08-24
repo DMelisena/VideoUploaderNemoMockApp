@@ -1,7 +1,7 @@
 import SwiftUI
 
-@main
-struct VideoUploaderAppApp: App {
+ @main
+struct VideoUploaderApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
