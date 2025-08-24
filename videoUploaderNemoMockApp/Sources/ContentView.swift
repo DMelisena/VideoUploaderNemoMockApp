@@ -207,22 +207,20 @@ public struct ContentView: View {
         }
     }
 
+    // Fix 4: Add upload progress tracking (optional enhancement)
     private func uploadVideo() {
         guard let videoURL = videoURL else {
             uploadStatus = "Please select a video first."
             return
         }
 
-        uploadStatus = "Uploading..."
-        downloadURL = ""
-        folders = []
-        showGallery = false
-        debugInfo = ""
+        uploadStatus = "Preparing upload..."
 
         let url = URL(string: "https://prime-whole-fish.ngrok-free.app/upload")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
+        request.timeoutInterval = 300
 
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -242,37 +240,56 @@ public struct ContentView: View {
         body.append(videoData)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
-        request.httpBody = body
+        // Create upload task for progress tracking
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 1200
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        let session = URLSession(configuration: config)
+
+        let uploadTask = session.uploadTask(with: request, from: body) { data, response, error in
             DispatchQueue.main.async {
-                if let error = error {
-                    uploadStatus = "Upload failed: \(error.localizedDescription)"
-                    return
-                }
-
-                guard let httpResponse = response as? HTTPURLResponse, (200 ... 299).contains(httpResponse.statusCode) else {
-                    uploadStatus = "Upload failed with status code: \((response as? HTTPURLResponse)?.statusCode ?? -1)"
-                    return
-                }
-
-                if let data = data {
-                    do {
-                        let fileResponse = try JSONDecoder().decode(FileResponse.self, from: data)
-                        uploadStatus = "Upload successful! Ready to download results."
-                        // Construct full download URL
-                        downloadURL = "https://prime-whole-fish.ngrok-free.app" + fileResponse.download_url
-                    } catch {
-                        uploadStatus = "Upload successful but failed to parse response: \(error.localizedDescription)"
-                        if let responseString = String(data: data, encoding: .utf8) {
-                            print("Raw response: \(responseString)")
-                        }
-                    }
-                } else {
-                    uploadStatus = "Upload completed but no response data."
-                }
+                // Handle response same as before
+                self.handleUploadResponse(data: data, response: response, error: error)
             }
-        }.resume()
+        }
+
+        // Track upload progress
+        _ = uploadTask.progress.observe(\.fractionCompleted) { progress, _ in
+            DispatchQueue.main.async {
+                let percentage = Int(progress.fractionCompleted * 100)
+                self.uploadStatus = "Uploading... \(percentage)%"
+            }
+        }
+
+        uploadTask.resume()
+    }
+
+    private func handleUploadResponse(data: Data?, response: URLResponse?, error: Error?) {
+        if let error = error as NSError? {
+            if error.code == NSURLErrorTimedOut {
+                uploadStatus = "Upload timed out. Try a smaller video or check your connection."
+            } else {
+                uploadStatus = "Upload failed: \(error.localizedDescription)"
+            }
+            return
+        }
+
+        // Handle successful response...
+        guard let httpResponse = response as? HTTPURLResponse, (200 ... 299).contains(httpResponse.statusCode) else {
+            uploadStatus = "Upload failed with status code: \((response as? HTTPURLResponse)?.statusCode ?? -1)"
+            return
+        }
+
+        if let data = data {
+            do {
+                let fileResponse = try JSONDecoder().decode(FileResponse.self, from: data)
+                uploadStatus = "Upload successful! Ready to download results."
+                downloadURL = "https://prime-whole-fish.ngrok-free.app" + fileResponse.download_url
+            } catch {
+                uploadStatus = "Upload successful but failed to parse response: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func downloadAndUnzipFile() {
