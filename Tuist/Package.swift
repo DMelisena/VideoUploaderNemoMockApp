@@ -16,6 +16,7 @@ let package = Package(
     name: "VideoUploaderNemoMockApp",
     dependencies: [
         .package(url: "https://github.com/ZipArchive/ZipArchive.git", from: "2.6.0"),
+        .package(url: "https://github.com/johnno1962/HotSwiftUI.git", from: "1.2.1"),
         // Add your own dependencies here:
         // .package(url: "https://github.com/Alamofire/Alamofire", from: "5.0.0"),
         // You can read more about dependencies here: https://docs.tuist.io/documentation/tuist/dependencies
